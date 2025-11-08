@@ -1,11 +1,32 @@
-# TODO: Use an official Python runtime as a parent image
+# Build stage - install all dependencies
+FROM python:3.11 AS builder
 
-# TODO: Set the working directory in the container
+WORKDIR /app
 
-# TODO: Copy the dependencies file to the working directory
+# Copy requirements first for better caching
+COPY requirements.txt .
 
-# TODO: Install any needed packages specified in requirements.txt
+# Install deps in venv for easier copying
+RUN python -m venv /opt/venv && \
+    /opt/venv/bin/pip install --upgrade pip && \
+    /opt/venv/bin/pip install -r requirements.txt
 
-# TODO: Copy the rest of the application's code
+# Runtime stage - smaller final image
+FROM python:3.11-slim
 
-# TODO: Command to run the application
+WORKDIR /app
+
+# Grab the venv from builder
+COPY --from=builder /opt/venv /opt/venv
+
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy app files
+COPY scripts/ ./scripts/
+COPY serving/ ./serving/
+COPY dependencies/ ./dependencies/
+COPY data/ ./data/
+
+EXPOSE 5001
+
+CMD ["python", "serving/serve.py"]

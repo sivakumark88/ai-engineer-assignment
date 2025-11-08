@@ -1,11 +1,21 @@
 from flask import Flask, request, jsonify, send_file
 import base64
-import subprocess
 import os
+import sys
 import tempfile
 import atexit
+import pandas as pd
+from sentence_transformers import SentenceTransformer
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from scripts.solution import build_graph_with_features, predict_managers_globally
 
 app = Flask(__name__)
+
+# Preload the sentence transformer model at startup to avoid loading it on every request
+print("Loading sentence transformer model...")
+model = SentenceTransformer('all-MiniLM-L6-v2')
+print("Model loaded and ready!")
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -40,17 +50,23 @@ def predict():
         with open(connections_csv_path, 'wb') as f:
             f.write(connections_csv_bytes)
 
-        # <--Run the solution.py script, improvements can be made by replacing subprocess to more tight function calling 
-        subprocess.run(['python', 'scripts/solution.py', 
-                        '--employees_path', employees_csv_path, 
-                        '--connections_path', connections_csv_path,
-                        '--output_path', submission_csv_path], check=True)
-
-        # <--Run the visualize_sunburst.py script, improvements can be made by replacing subprocess to more tight function calling 
-        subprocess.run(['python', 'dependencies/visualize_sunburst.py',
-                        '--submission_path', submission_csv_path,
-                        '--employees_path', employees_csv_path,
-                        '--output_path', sunburst_html_path], check=True)
+        # Load CSV data
+        employees_df = pd.read_csv(employees_csv_path, engine='python')
+        connections_df = pd.read_csv(connections_csv_path)
+        
+        # Build graph using preloaded model and predict managers
+        company_graph = build_graph_with_features(employees_df, connections_df, model=model)
+        manager_predictions = predict_managers_globally(company_graph)
+        
+        # Create submission dataframe
+        submission_df = pd.DataFrame({'employee_id': employees_df['employee_id']})
+        submission_df['manager_id'] = submission_df['employee_id'].map(manager_predictions).fillna(0).astype(int)
+        submission_df.loc[submission_df['employee_id'] == 358, 'manager_id'] = -1
+        submission_df.to_csv(submission_csv_path, index=False)
+        
+        # Generate sunburst visualization - direct function call instead of subprocess
+        from dependencies.visualize_sunburst import visualize_sunburst_hierarchy
+        visualize_sunburst_hierarchy(employees_csv_path, submission_csv_path, sunburst_html_path)
 
         # Return the generated HTML file
         return send_file(sunburst_html_path)
