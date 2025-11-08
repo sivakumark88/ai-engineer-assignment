@@ -1,0 +1,86 @@
+name: PR Performance Check
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  evaluate-performance:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout PR branch
+      uses: actions/checkout@v3
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run solution on PR branch
+      run: python3 scripts/solution.py
+    
+    - name: Evaluate PR accuracy
+      run: python3 dependencies/evaluate.py submission.csv data/ground_truth_managers.csv
+    
+    - name: Save PR accuracy
+      run: |
+        PR_ACC=$(cat accuracy.txt)
+        echo "PR_ACCURACY=$PR_ACC" >> $GITHUB_ENV
+        echo "PR accuracy: $PR_ACC"
+    
+    - name: Checkout main branch
+      uses: actions/checkout@v3
+      with:
+        ref: main
+        clean: false
+    
+    - name: Run solution on main branch
+      run: python3 scripts/solution.py
+    
+    - name: Evaluate main accuracy
+      run: python3 dependencies/evaluate.py submission.csv data/ground_truth_managers.csv
+    
+    - name: Save main accuracy
+      run: |
+        MAIN_ACC=$(cat accuracy.txt)
+        echo "MAIN_ACCURACY=$MAIN_ACC" >> $GITHUB_ENV
+        echo "Main accuracy: $MAIN_ACC"
+    
+    - name: Comment on PR
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const prAcc = process.env.PR_ACCURACY;
+          const mainAcc = process.env.MAIN_ACCURACY;
+          const improved = prAcc >= mainAcc;
+          
+          const body = `## Performance Evaluation Results
+          
+          | Branch | Accuracy |
+          |--------|----------|
+          | PR Branch | ${prAcc} |
+          | Main Branch | ${mainAcc} |
+          
+          **Result:** ${improved ? 'Performance maintained or improved' : 'Performance decreased from main branch'}
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: body
+          });
