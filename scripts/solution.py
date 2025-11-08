@@ -29,33 +29,35 @@ def load_data(employees_path, connections_path):
         return None, None
 
 # --- 3. FEATURE ENGINEERING & GRAPH CONSTRUCTION ---
-def build_graph_with_features(employees_df, connections_df):
+def build_graph_with_features(employees_df, connections_df, model=None):
     """Builds the graph and enriches it with all necessary node attributes."""
     print("Step 2: Engineering features and building graph...")
     
     print("   - Generating text embeddings...")
     
     employees_df['combined_text'] = employees_df['job_title_current'].fillna('') + ". " + employees_df['profile_summary'].fillna('')
-    model = SentenceTransformer('all-MiniLM-L6-v2')
-
-    embeddings = []
-    for i, row in employees_df.iterrows():
-        embedding = model.encode(row['combined_text'])  # <-- Inefficient: no batching
-        embeddings.append(embedding)
     
-    embedding_dict = {row['employee_id']: emb for row, emb in zip(employees_df.to_dict('records'), embeddings)}
+    # Use preloaded model if provided, otherwise load it here
+    if model is None:
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+
+    # Batch process all embeddings at once - much faster than encoding one by one
+    embeddings = model.encode(employees_df['combined_text'].tolist(), show_progress_bar=True)
+    
+    # Map employee IDs to their embeddings
+    embedding_dict = {emp_id: emb for emp_id, emb in zip(employees_df['employee_id'], embeddings)}
 
     def get_seniority(title):
+        """Extract seniority level from job title using regex patterns."""
         title = str(title).lower()
-        # <-- Inefficient: Each regex runs even if match already found
-        score = 2
-        if re.search(r'\b(chief|ceo)\b', title): score = 7
-        if re.search(r'\b(vp|vice president)\b', title): score = 6
-        if re.search(r'\b(director|head)\b', title): score = 5
-        if re.search(r'\b(manager|lead)\b', title): score = 4
-        if re.search(r'\b(senior|principal|sr\.)\b', title): score = 3
-        if re.search(r'\b(junior|entry|associate)\b', title): score = 1
-        return score
+        # Return as soon as we find a match - no need to check remaining patterns
+        if re.search(r'\b(chief|ceo)\b', title): return 7
+        if re.search(r'\b(vp|vice president)\b', title): return 6
+        if re.search(r'\b(director|head)\b', title): return 5
+        if re.search(r'\b(manager|lead)\b', title): return 4
+        if re.search(r'\b(senior|principal|sr\.)\b', title): return 3
+        if re.search(r'\b(junior|entry|associate)\b', title): return 1
+        return 2
 
     employees_df['seniority_score'] = employees_df['job_title_current'].apply(get_seniority)
 
@@ -67,10 +69,7 @@ def build_graph_with_features(employees_df, connections_df):
     for node_id, attrs in node_attributes.items():
         attrs['embedding'] = embedding_dict.get(node_id)
 
-    # <-- Inefficient: Adding same node twice unnecessarily
-    for node in employees_df['employee_id']:
-        G.add_node(node)
-
+    # nx.set_node_attributes automatically creates nodes, so no need to add them manually first
     nx.set_node_attributes(G, node_attributes)
     G.add_edges_from(connections_df.values)
 
@@ -166,12 +165,9 @@ if __name__ == "__main__":
 
         print("\nStep 5: Generating Submission File...")
 
-        # <-- Inefficient merge: could be simplified using sort and concat
-        predictions_df = pd.DataFrame(manager_predictions.items(), columns=['employee_id', 'manager_id'])
-        all_employees_df = pd.DataFrame(employees['employee_id'])
-        submission_df = pd.merge(all_employees_df, predictions_df, on='employee_id', how='left')
-
-        submission_df['manager_id'] = submission_df['manager_id'].fillna(0).astype(int)
+        # Create submission dataframe and map predictions directly
+        submission_df = pd.DataFrame({'employee_id': employees['employee_id']})
+        submission_df['manager_id'] = submission_df['employee_id'].map(manager_predictions).fillna(0).astype(int)
 
         submission_df.loc[submission_df['employee_id'] == 358, 'manager_id'] = -1
 
